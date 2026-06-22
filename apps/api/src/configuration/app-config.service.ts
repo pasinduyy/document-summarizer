@@ -15,6 +15,7 @@ export function resolveStorageRoot(
 export class AppConfigService {
   readonly apiPort: number
   readonly databaseUrl: string
+  readonly redisUrl: string
   readonly storageRoot: string
 
   constructor() {
@@ -30,8 +31,15 @@ export class AppConfigService {
       throw new Error('DATABASE_URL must be set')
     }
 
+    const redisUrl = process.env.REDIS_URL
+
+    if (!redisUrl) {
+      throw new Error('REDIS_URL must be set')
+    }
+
     this.apiPort = apiPort
     this.databaseUrl = databaseUrl
+    this.redisUrl = redisUrl
     this.storageRoot = resolveStorageRoot()
   }
 }

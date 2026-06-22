@@ -9,6 +9,7 @@ import {
 import { createReadStream } from 'node:fs'
 import { unlink } from 'node:fs/promises'
 import { DatabaseService } from '../database/database.service'
+import { DocumentProcessingQueueService } from '../queue/document-processing-queue.service'
 import {
   MAX_UPLOAD_FILE_SIZE_BYTES,
   MAX_UPLOAD_FILES,
@@ -24,10 +25,13 @@ export class DocumentsService {
   constructor(
     private readonly database: DatabaseService,
     private readonly documentStorage: DocumentStorage,
+    private readonly documentProcessingQueue: DocumentProcessingQueueService,
   ) {}
 
   async upload(files: readonly StagedUploadFile[]): Promise<UploadDocumentsResponse> {
     const storageKeys: string[] = []
+    let documents: UploadDocumentsResponse['documents']
+    let processingJobIds: string[]
 
     try {
       this.validateFiles(files)
@@ -40,7 +44,7 @@ export class DocumentsService {
         storedFiles.push({ file, storageKey })
       }
 
-      const documents = await this.database.$transaction(async (transaction) => {
+      const createdDocuments = await this.database.$transaction(async (transaction) => {
         const createdDocuments = []
 
         for (const { file, storageKey } of storedFiles) {
@@ -60,20 +64,35 @@ export class DocumentsService {
             select: {
               id: true,
               originalFilename: true,
+              processingJob: {
+                select: {
+                  id: true,
+                },
+              },
             },
           })
+
+          if (!document.processingJob) {
+            throw new Error(`Processing job was not created for document ${document.id}`)
+          }
 
           createdDocuments.push({
             id: document.id,
             originalFilename: document.originalFilename,
             status: DOCUMENT_STATUSES.QUEUED,
+            processingJobId: document.processingJob.id,
           })
         }
 
         return createdDocuments
       })
 
-      return { documents }
+      documents = createdDocuments.map(({ id, originalFilename, status }) => ({
+        id,
+        originalFilename,
+        status,
+      }))
+      processingJobIds = createdDocuments.map(({ processingJobId }) => processingJobId)
     } catch (error) {
       await this.cleanupStoredFiles(storageKeys)
 
@@ -86,6 +105,20 @@ export class DocumentsService {
     } finally {
       await this.cleanupStagedFiles(files)
     }
+
+    await Promise.all(
+      processingJobIds.map(async (processingJobId) => {
+        try {
+          await this.documentProcessingQueue.tryPublish(processingJobId)
+        } catch (error) {
+          this.logger.warn(
+            `Unable to publish processing job ${processingJobId}: ${this.errorMessage(error)}`,
+          )
+        }
+      }),
+    )
+
+    return { documents }
   }
 
   private validateFiles(files: readonly StagedUploadFile[]): void {

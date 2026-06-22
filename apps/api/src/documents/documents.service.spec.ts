@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
 import { DatabaseService } from '../database/database.service'
+import { DocumentProcessingQueueService } from '../queue/document-processing-queue.service'
 import { MAX_UPLOAD_FILE_SIZE_BYTES } from './documents.constants'
 import { DocumentsService } from './documents.service'
 import { StagedUploadFile } from './documents.types'
@@ -19,6 +20,9 @@ describe('DocumentsService', () => {
   let documentStorage: {
     store: ReturnType<typeof jest.fn>
     delete: ReturnType<typeof jest.fn>
+  }
+  let documentProcessingQueue: {
+    tryPublish: jest.Mock<(processingJobId: string) => Promise<boolean>>
   }
   let service: DocumentsService
   let temporaryDirectory: string
@@ -32,9 +36,13 @@ describe('DocumentsService', () => {
       store: jest.fn(),
       delete: jest.fn(),
     }
+    documentProcessingQueue = {
+      tryPublish: jest.fn<(processingJobId: string) => Promise<boolean>>().mockResolvedValue(true),
+    }
     service = new DocumentsService(
       database as unknown as DatabaseService,
       documentStorage as unknown as DocumentStorage,
+      documentProcessingQueue as unknown as DocumentProcessingQueueService,
     )
 
     jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined)
@@ -60,6 +68,9 @@ describe('DocumentsService', () => {
       const document = {
         id: `document-${nextDocumentId}`,
         originalFilename: data.originalFilename,
+        processingJob: {
+          id: `processing-job-${nextDocumentId}`,
+        },
       }
       nextDocumentId += 1
       return Promise.resolve(document)
@@ -124,6 +135,46 @@ describe('DocumentsService', () => {
         }),
       }),
     )
+    expect(documentProcessingQueue.tryPublish).toHaveBeenCalledTimes(2)
+    expect(documentProcessingQueue.tryPublish).toHaveBeenNthCalledWith(1, 'processing-job-1')
+    expect(documentProcessingQueue.tryPublish).toHaveBeenNthCalledWith(2, 'processing-job-2')
+  })
+
+  it('returns the accepted upload response when queue publishing returns false', async () => {
+    const files = [await createStagedFile('first.txt', 'text/plain', 'first document')]
+    mockStorageKeys(['storage-key'])
+    documentProcessingQueue.tryPublish.mockResolvedValue(false)
+    const documentCreate = jest
+      .fn<() => Promise<{ id: string; originalFilename: string; processingJob: { id: string } }>>()
+      .mockResolvedValue({
+        id: 'document-1',
+        originalFilename: 'first.txt',
+        processingJob: { id: 'processing-job-1' },
+      })
+    database.$transaction.mockImplementation(
+      (
+        callback: (transaction: {
+          document: { create: ReturnType<typeof jest.fn> }
+        }) => Promise<unknown>,
+      ) =>
+        callback({
+          document: {
+            create: documentCreate,
+          },
+        }),
+    )
+
+    await expect(service.upload(files)).resolves.toEqual({
+      documents: [
+        {
+          id: 'document-1',
+          originalFilename: 'first.txt',
+          status: DOCUMENT_STATUSES.QUEUED,
+        },
+      ],
+    })
+
+    expect(documentProcessingQueue.tryPublish).toHaveBeenCalledWith('processing-job-1')
   })
 
   it('rejects an empty upload batch before storage or database operations', async () => {

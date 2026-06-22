@@ -43,3 +43,6 @@ export type DocumentCategory = (typeof DOCUMENT_CATEGORIES)[keyof typeof DOCUMEN
 export type ProcessDocumentJobPayload = {
   processingJobId: string
 }
+
+export const DOCUMENT_PROCESSING_QUEUE_NAME = 'document-processing'
+export const PROCESS_DOCUMENT_JOB_NAME = 'process-document'
