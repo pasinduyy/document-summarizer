@@ -3,6 +3,14 @@ import { isAbsolute, resolve } from 'node:path'
 
 const repositoryRoot = resolve(__dirname, '../../../../')
 
+export function resolveStorageRoot(
+  configuredStorageRoot = process.env.STORAGE_ROOT ?? 'data/uploads',
+): string {
+  return isAbsolute(configuredStorageRoot)
+    ? configuredStorageRoot
+    : resolve(repositoryRoot, configuredStorageRoot)
+}
+
 @Injectable()
 export class AppConfigService {
   readonly apiPort: number
@@ -22,12 +30,8 @@ export class AppConfigService {
       throw new Error('DATABASE_URL must be set')
     }
 
-    const configuredStorageRoot = process.env.STORAGE_ROOT ?? 'data/uploads'
-
     this.apiPort = apiPort
     this.databaseUrl = databaseUrl
-    this.storageRoot = isAbsolute(configuredStorageRoot)
-      ? configuredStorageRoot
-      : resolve(repositoryRoot, configuredStorageRoot)
+    this.storageRoot = resolveStorageRoot()
   }
 }
