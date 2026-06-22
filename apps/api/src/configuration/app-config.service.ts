@@ -1,9 +1,13 @@
 import { Injectable } from '@nestjs/common'
+import { isAbsolute, resolve } from 'node:path'
+
+const repositoryRoot = resolve(__dirname, '../../../../')
 
 @Injectable()
 export class AppConfigService {
   readonly apiPort: number
   readonly databaseUrl: string
+  readonly storageRoot: string
 
   constructor() {
     const apiPort = Number.parseInt(process.env.API_PORT ?? '3001', 10)
@@ -18,7 +22,12 @@ export class AppConfigService {
       throw new Error('DATABASE_URL must be set')
     }
 
+    const configuredStorageRoot = process.env.STORAGE_ROOT ?? 'data/uploads'
+
     this.apiPort = apiPort
     this.databaseUrl = databaseUrl
+    this.storageRoot = isAbsolute(configuredStorageRoot)
+      ? configuredStorageRoot
+      : resolve(repositoryRoot, configuredStorageRoot)
   }
 }

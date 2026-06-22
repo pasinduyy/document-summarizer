@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@document-summarizer/database": "^0.1.0",
+    "@document-summarizer/storage": "^0.1.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
