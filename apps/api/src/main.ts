@@ -7,6 +7,14 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule)
   app.enableShutdownHooks()
 
+  const config = app.get(AppConfigService)
+  app.enableCors({
+    origin: config.webOrigin,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Accept'],
+    credentials: false,
+  })
+
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Document Summarizer API')
     .setVersion('0.1.0')
@@ -14,7 +22,6 @@ async function bootstrap() {
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig)
   SwaggerModule.setup('api', app, swaggerDocument)
 
-  const config = app.get(AppConfigService)
   await app.listen(config.apiPort)
 }
 
