@@ -197,6 +197,20 @@ describe('DocumentsService', () => {
     expect(database.$transaction).not.toHaveBeenCalled()
   })
 
+  it.each(['image/jpeg', 'image/png', 'image/webp'])(
+    'rejects %s uploads before storage or database operations',
+    async (mimeType) => {
+      const file = await createStagedFile('image-upload', mimeType, 'content')
+
+      await expect(service.upload([file])).rejects.toThrow(
+        `File "image-upload" has an unsupported MIME type: ${mimeType}`,
+      )
+
+      expect(documentStorage.store).not.toHaveBeenCalled()
+      expect(database.$transaction).not.toHaveBeenCalled()
+    },
+  )
+
   it('rejects an oversized file before storage or database operations', async () => {
     const file = await createStagedFile('oversized.txt', 'text/plain', 'content')
     file.size = MAX_UPLOAD_FILE_SIZE_BYTES + 1
