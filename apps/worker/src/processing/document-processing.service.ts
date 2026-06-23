@@ -1,5 +1,6 @@
 import {
   DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+  DOCUMENT_PROCESSING_LEASE_DURATION_MS,
   DOCUMENT_PROCESSING_MAX_ATTEMPTS,
   DOCUMENT_STATUSES,
   PROCESSING_ATTEMPT_STATUSES,
@@ -9,7 +10,10 @@ import { Inject, Injectable, Logger } from '@nestjs/common'
 import { UnrecoverableError } from 'bullmq'
 import { DatabaseService } from '../database/database.service'
 import { DocumentAnalysisProvider, DocumentAnalysisResult } from './document-analysis-provider'
-import { DocumentProcessingError } from './document-processing.error'
+import {
+  DOCUMENT_PROCESSING_ERROR_CODES,
+  DocumentProcessingError,
+} from './document-processing.error'
 import { DocumentTextExtractorService } from './document-text-extractor.service'
 
 type ClaimedDocument = {
@@ -20,6 +24,10 @@ type ClaimedDocument = {
   originalFilename: string
   mimeType: string
   storageKey: string
+}
+
+type StaleFinalAttempt = {
+  staleFinalAttempt: true
 }
 
 const PROCESSING_RETRYABLE_FAILURE = 'PROCESSING_RETRYABLE_FAILURE'
@@ -42,6 +50,10 @@ export class DocumentProcessingService {
     if (!claimedDocument) {
       this.logger.debug(`Processing job ${processingJobId} was already claimed or handled`)
       return
+    }
+
+    if ('staleFinalAttempt' in claimedDocument) {
+      throw new UnrecoverableError('Document processing lease expired after the final attempt')
     }
 
     try {
@@ -73,9 +85,14 @@ export class DocumentProcessingService {
     }
   }
 
-  private async claim(processingJobId: string): Promise<ClaimedDocument | null> {
+  private async claim(
+    processingJobId: string,
+  ): Promise<ClaimedDocument | StaleFinalAttempt | null> {
+    const claimedAt = new Date()
+    const leaseExpiresAt = new Date(claimedAt.getTime() + DOCUMENT_PROCESSING_LEASE_DURATION_MS)
+
     return this.database.$transaction(async (transaction) => {
-      const claim = await transaction.processingJob.updateMany({
+      const normalClaim = await transaction.processingJob.updateMany({
         where: {
           id: processingJobId,
           status: {
@@ -89,11 +106,112 @@ export class DocumentProcessingService {
         data: {
           status: PROCESSING_JOB_STATUSES.PROCESSING,
           attemptCount: { increment: 1 },
+          leaseExpiresAt,
         },
       })
 
-      if (claim.count !== 1) {
-        return null
+      const requiresQueuedDocument = normalClaim.count === 1
+
+      if (!requiresQueuedDocument) {
+        const staleProcessingJob = await transaction.processingJob.findUnique({
+          where: { id: processingJobId },
+          select: {
+            attemptCount: true,
+            documentId: true,
+            leaseExpiresAt: true,
+            status: true,
+          },
+        })
+
+        if (
+          !staleProcessingJob ||
+          staleProcessingJob.status !== PROCESSING_JOB_STATUSES.PROCESSING ||
+          !staleProcessingJob.leaseExpiresAt ||
+          staleProcessingJob.leaseExpiresAt > claimedAt
+        ) {
+          return null
+        }
+
+        const staleClaimWhere = {
+          id: processingJobId,
+          attemptCount: staleProcessingJob.attemptCount,
+          leaseExpiresAt: { lte: claimedAt },
+          status: PROCESSING_JOB_STATUSES.PROCESSING,
+        }
+
+        if (staleProcessingJob.attemptCount >= DOCUMENT_PROCESSING_MAX_ATTEMPTS) {
+          const deadLetter = await transaction.processingJob.updateMany({
+            where: staleClaimWhere,
+            data: {
+              status: PROCESSING_JOB_STATUSES.DEAD_LETTERED,
+              leaseExpiresAt: null,
+              lastErrorCode: DOCUMENT_PROCESSING_ERROR_CODES.WORKER_LEASE_EXPIRED,
+              nextRetryAt: null,
+            },
+          })
+
+          if (deadLetter.count !== 1) {
+            return null
+          }
+
+          const expiredAttempt = await transaction.processingAttempt.updateMany({
+            where: {
+              processingJobId,
+              attemptNumber: staleProcessingJob.attemptCount,
+              status: PROCESSING_ATTEMPT_STATUSES.STARTED,
+            },
+            data: {
+              status: PROCESSING_ATTEMPT_STATUSES.FAILED,
+              finishedAt: claimedAt,
+              errorCode: DOCUMENT_PROCESSING_ERROR_CODES.WORKER_LEASE_EXPIRED,
+            },
+          })
+
+          if (expiredAttempt.count !== 1) {
+            throw new Error(
+              `Processing job ${processingJobId} did not have a started final attempt to expire`,
+            )
+          }
+
+          await transaction.document.update({
+            where: { id: staleProcessingJob.documentId },
+            data: { status: DOCUMENT_STATUSES.FAILED },
+          })
+
+          return { staleFinalAttempt: true }
+        }
+
+        const staleClaim = await transaction.processingJob.updateMany({
+          where: staleClaimWhere,
+          data: {
+            status: PROCESSING_JOB_STATUSES.PROCESSING,
+            attemptCount: { increment: 1 },
+            leaseExpiresAt,
+          },
+        })
+
+        if (staleClaim.count !== 1) {
+          return null
+        }
+
+        const expiredAttempt = await transaction.processingAttempt.updateMany({
+          where: {
+            processingJobId,
+            attemptNumber: staleProcessingJob.attemptCount,
+            status: PROCESSING_ATTEMPT_STATUSES.STARTED,
+          },
+          data: {
+            status: PROCESSING_ATTEMPT_STATUSES.FAILED,
+            finishedAt: claimedAt,
+            errorCode: DOCUMENT_PROCESSING_ERROR_CODES.WORKER_LEASE_EXPIRED,
+          },
+        })
+
+        if (expiredAttempt.count !== 1) {
+          throw new Error(
+            `Processing job ${processingJobId} did not have a started attempt to expire`,
+          )
+        }
       }
 
       const processingJob = await transaction.processingJob.findUnique({
@@ -116,20 +234,22 @@ export class DocumentProcessingService {
         throw new Error(`Claimed processing job ${processingJobId} no longer exists`)
       }
 
-      const documentUpdate = await transaction.document.updateMany({
-        where: {
-          id: processingJob.document.id,
-          status: DOCUMENT_STATUSES.QUEUED,
-        },
-        data: {
-          status: DOCUMENT_STATUSES.PROCESSING,
-        },
-      })
+      if (requiresQueuedDocument) {
+        const documentUpdate = await transaction.document.updateMany({
+          where: {
+            id: processingJob.document.id,
+            status: DOCUMENT_STATUSES.QUEUED,
+          },
+          data: {
+            status: DOCUMENT_STATUSES.PROCESSING,
+          },
+        })
 
-      if (documentUpdate.count !== 1) {
-        throw new Error(
-          `Document ${processingJob.document.id} was not queued when processing began`,
-        )
+        if (documentUpdate.count !== 1) {
+          throw new Error(
+            `Document ${processingJob.document.id} was not queued when processing began`,
+          )
+        }
       }
 
       const processingAttempt = await transaction.processingAttempt.create({
@@ -222,6 +342,7 @@ export class DocumentProcessingService {
           status: PROCESSING_JOB_STATUSES.DEAD_LETTERED,
           lastErrorCode: errorCode,
           nextRetryAt: null,
+          leaseExpiresAt: null,
         },
       })
       await transaction.document.update({
@@ -255,6 +376,7 @@ export class DocumentProcessingService {
           status: PROCESSING_JOB_STATUSES.RETRY_SCHEDULED,
           lastErrorCode: PROCESSING_RETRYABLE_FAILURE,
           nextRetryAt,
+          leaseExpiresAt: null,
         },
       })
       await transaction.document.update({
@@ -284,6 +406,7 @@ export class DocumentProcessingService {
           status: PROCESSING_JOB_STATUSES.DEAD_LETTERED,
           lastErrorCode: PROCESSING_RETRY_EXHAUSTED,
           nextRetryAt: null,
+          leaseExpiresAt: null,
         },
       })
       await transaction.document.update({

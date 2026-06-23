@@ -1,4 +1,5 @@
 import {
+  DOCUMENT_PROCESSING_LEASE_DURATION_MS,
   DOCUMENT_PROCESSING_QUEUE_NAME,
   PROCESS_DOCUMENT_JOB_NAME,
   ProcessDocumentJobPayload,
@@ -30,6 +31,7 @@ export class DocumentProcessingWorkerService implements OnModuleInit, OnApplicat
       {
         connection: createWorkerRedisConnectionOptions(this.config.redisUrl),
         concurrency: 1,
+        lockDuration: DOCUMENT_PROCESSING_LEASE_DURATION_MS,
       },
     )
 
