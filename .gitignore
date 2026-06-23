@@ -51,6 +51,7 @@ lerna-debug.log*
 .tmp
 
 # Runtime data
+/data/
 pids
 *.pid
 *.seed
@@ -59,7 +60,7 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
-/generated/prisma
+/packages/database/src/generated/
 
 
 # ========== WEB ==========
@@ -108,3 +109,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ========== OTHER ==========
+
+notes/

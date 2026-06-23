@@ -8,7 +8,9 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
+    "build:shared": "npm run build --workspace=@document-summarizer/database && npm run build --workspace=@document-summarizer/contracts && npm run build --workspace=@document-summarizer/storage",
+    "build:apps": "npm run build --workspace=api && npm run build --workspace=worker && npm run build --workspace=web",
+    "build": "npm run build:shared && npm run build:apps",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "format": "prettier --write .",
