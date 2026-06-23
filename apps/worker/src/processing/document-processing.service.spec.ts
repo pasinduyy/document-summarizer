@@ -1,4 +1,6 @@
 import {
+  DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+  DOCUMENT_PROCESSING_MAX_ATTEMPTS,
   DOCUMENT_CATEGORIES,
   DOCUMENT_STATUSES,
   PROCESSING_ATTEMPT_STATUSES,
@@ -6,6 +8,7 @@ import {
 } from '@document-summarizer/contracts'
 import { DocumentStorage } from '@document-summarizer/storage'
 import { Logger } from '@nestjs/common'
+import { UnrecoverableError } from 'bullmq'
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals'
 import { Readable } from 'node:stream'
 import { DatabaseService } from '../database/database.service'
@@ -74,7 +77,11 @@ describe('DocumentProcessingService', () => {
       where: {
         id: 'processing-job-1',
         status: {
-          in: [PROCESSING_JOB_STATUSES.PENDING, PROCESSING_JOB_STATUSES.QUEUED],
+          in: [
+            PROCESSING_JOB_STATUSES.PENDING,
+            PROCESSING_JOB_STATUSES.QUEUED,
+            PROCESSING_JOB_STATUSES.RETRY_SCHEDULED,
+          ],
         },
       },
       data: {
@@ -97,6 +104,7 @@ describe('DocumentProcessingService', () => {
       },
       select: { id: true },
     })
+    expect(claimTransaction.processingAttempt.create).toHaveBeenCalledTimes(1)
     expect(documentStorage.openReadStream).toHaveBeenCalledWith('storage-key-1')
     expect(documentAnalysis.analyze).toHaveBeenCalledWith(
       'Invoice INV-1001 Subtotal: 10.00 Amount due: 10.00.',
@@ -122,6 +130,7 @@ describe('DocumentProcessingService', () => {
       data: {
         status: PROCESSING_JOB_STATUSES.COMPLETED,
         lastErrorCode: null,
+        nextRetryAt: null,
         leaseExpiresAt: null,
       },
     })
@@ -150,15 +159,133 @@ describe('DocumentProcessingService', () => {
     expect(database.$transaction).toHaveBeenCalledTimes(1)
   })
 
-  it('records terminal extraction failure and rejects the queue processor', async () => {
+  it('claims a retry-scheduled job for its next attempt', async () => {
+    const claimTransaction = createClaimTransaction({ attemptCount: 2 })
+    const completionTransaction = createCompletionTransaction()
+    mockTransactions(claimTransaction, completionTransaction)
+    documentStorage.openReadStream.mockResolvedValue(Readable.from(['retry text']))
+    documentAnalysis.analyze.mockResolvedValue({
+      summary: 'retry text',
+      category: DOCUMENT_CATEGORIES.OTHER,
+      confidence: 0.5,
+      providerName: 'mock-rules',
+      modelVersion: 'v1',
+    })
+
+    await expect(service.process('processing-job-1')).resolves.toBeUndefined()
+
+    expect(claimTransaction.processingJob.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'processing-job-1',
+        status: {
+          in: [
+            PROCESSING_JOB_STATUSES.PENDING,
+            PROCESSING_JOB_STATUSES.QUEUED,
+            PROCESSING_JOB_STATUSES.RETRY_SCHEDULED,
+          ],
+        },
+      },
+      data: {
+        status: PROCESSING_JOB_STATUSES.PROCESSING,
+        attemptCount: { increment: 1 },
+      },
+    })
+    expect(claimTransaction.processingAttempt.create).toHaveBeenCalledWith({
+      data: {
+        processingJobId: 'processing-job-1',
+        attemptNumber: 2,
+        status: PROCESSING_ATTEMPT_STATUSES.STARTED,
+      },
+      select: { id: true },
+    })
+  })
+
+  it('schedules a retry for a transient error before the final attempt', async () => {
+    const claimTransaction = createClaimTransaction()
+    const failureTransaction = createFailureTransaction()
+    const transientError = new Error('Provider temporarily unavailable')
+    mockTransactions(claimTransaction, failureTransaction)
+    documentStorage.openReadStream.mockResolvedValue(Readable.from(['retryable text']))
+    documentAnalysis.analyze.mockRejectedValue(transientError)
+
+    await expect(service.process('processing-job-1')).rejects.toBe(transientError)
+
+    expect(failureTransaction.processingAttempt.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'attempt-1' },
+        data: expect.objectContaining({
+          status: PROCESSING_ATTEMPT_STATUSES.FAILED,
+          errorCode: 'PROCESSING_RETRYABLE_FAILURE',
+        }),
+      }),
+    )
+    expect(failureTransaction.processingJob.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'processing-job-1' },
+        data: expect.objectContaining({
+          status: PROCESSING_JOB_STATUSES.RETRY_SCHEDULED,
+          lastErrorCode: 'PROCESSING_RETRYABLE_FAILURE',
+          nextRetryAt: expect.any(Date),
+        }),
+      }),
+    )
+    expect(failureTransaction.document.update).toHaveBeenCalledWith({
+      where: { id: 'document-1' },
+      data: { status: DOCUMENT_STATUSES.QUEUED },
+    })
+
+    const attemptUpdate = failureTransaction.processingAttempt.update.mock.calls[0][0] as {
+      data: { finishedAt: Date }
+    }
+    const processingJobUpdate = failureTransaction.processingJob.update.mock.calls[0][0] as {
+      data: { nextRetryAt: Date }
+    }
+    expect(processingJobUpdate.data.nextRetryAt.getTime()).toBe(
+      attemptUpdate.data.finishedAt.getTime() + DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+    )
+  })
+
+  it('dead-letters a transient error on the final allowed attempt', async () => {
+    const claimTransaction = createClaimTransaction({
+      attemptCount: DOCUMENT_PROCESSING_MAX_ATTEMPTS,
+    })
+    const failureTransaction = createFailureTransaction()
+    mockTransactions(claimTransaction, failureTransaction)
+    documentStorage.openReadStream.mockResolvedValue(Readable.from(['retryable text']))
+    documentAnalysis.analyze.mockRejectedValue(new Error('Provider temporarily unavailable'))
+
+    await expect(service.process('processing-job-1')).rejects.toBeInstanceOf(UnrecoverableError)
+
+    expect(failureTransaction.processingAttempt.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'attempt-1' },
+        data: expect.objectContaining({
+          status: PROCESSING_ATTEMPT_STATUSES.FAILED,
+          errorCode: 'PROCESSING_RETRY_EXHAUSTED',
+        }),
+      }),
+    )
+    expect(failureTransaction.processingJob.update).toHaveBeenCalledWith({
+      where: { id: 'processing-job-1' },
+      data: {
+        status: PROCESSING_JOB_STATUSES.DEAD_LETTERED,
+        lastErrorCode: 'PROCESSING_RETRY_EXHAUSTED',
+        nextRetryAt: null,
+      },
+    })
+    expect(failureTransaction.document.update).toHaveBeenCalledWith({
+      where: { id: 'document-1' },
+      data: { status: DOCUMENT_STATUSES.FAILED },
+    })
+  })
+
+  it('records terminal extraction failure and throws an unrecoverable queue error', async () => {
     const claimTransaction = createClaimTransaction()
     const failureTransaction = createFailureTransaction()
     mockTransactions(claimTransaction, failureTransaction)
     documentStorage.openReadStream.mockResolvedValue(Readable.from(['  \n\t  ']))
 
-    await expect(service.process('processing-job-1')).rejects.toMatchObject({
-      code: DOCUMENT_PROCESSING_ERROR_CODES.EMPTY_DOCUMENT_TEXT,
-    })
+    await expect(service.process('processing-job-1')).rejects.toBeInstanceOf(UnrecoverableError)
 
     expect(failureTransaction.processingAttempt.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -174,6 +301,7 @@ describe('DocumentProcessingService', () => {
       data: {
         status: PROCESSING_JOB_STATUSES.DEAD_LETTERED,
         lastErrorCode: DOCUMENT_PROCESSING_ERROR_CODES.EMPTY_DOCUMENT_TEXT,
+        nextRetryAt: null,
       },
     })
     expect(failureTransaction.document.update).toHaveBeenCalledWith({
@@ -194,13 +322,13 @@ describe('DocumentProcessingService', () => {
     })
   }
 
-  function createClaimTransaction() {
+  function createClaimTransaction({ attemptCount = 1 }: { attemptCount?: number } = {}) {
     return {
       processingJob: {
         updateMany: resolvedMock({ count: 1 }),
         findUnique: resolvedMock({
           id: 'processing-job-1',
-          attemptCount: 1,
+          attemptCount,
           document: {
             id: 'document-1',
             originalFilename: 'invoice.txt',

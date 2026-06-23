@@ -1,9 +1,12 @@
 import {
+  DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+  DOCUMENT_PROCESSING_MAX_ATTEMPTS,
   DOCUMENT_STATUSES,
   PROCESSING_ATTEMPT_STATUSES,
   PROCESSING_JOB_STATUSES,
 } from '@document-summarizer/contracts'
 import { Inject, Injectable, Logger } from '@nestjs/common'
+import { UnrecoverableError } from 'bullmq'
 import { DatabaseService } from '../database/database.service'
 import { DocumentAnalysisProvider, DocumentAnalysisResult } from './document-analysis-provider'
 import { DocumentProcessingError } from './document-processing.error'
@@ -13,10 +16,14 @@ type ClaimedDocument = {
   documentId: string
   processingJobId: string
   processingAttemptId: string
+  attemptNumber: number
   originalFilename: string
   mimeType: string
   storageKey: string
 }
+
+const PROCESSING_RETRYABLE_FAILURE = 'PROCESSING_RETRYABLE_FAILURE'
+const PROCESSING_RETRY_EXHAUSTED = 'PROCESSING_RETRY_EXHAUSTED'
 
 @Injectable()
 export class DocumentProcessingService {
@@ -49,9 +56,19 @@ export class DocumentProcessingService {
           this.logger.error(
             `Unable to record terminal failure for processing job ${processingJobId}: ${this.errorMessage(persistenceError)}`,
           )
+
+          throw error
         }
+
+        throw new UnrecoverableError(error.message)
       }
 
+      if (claimedDocument.attemptNumber >= DOCUMENT_PROCESSING_MAX_ATTEMPTS) {
+        await this.failAfterRetryExhausted(claimedDocument)
+        throw new UnrecoverableError(this.errorMessage(error))
+      }
+
+      await this.scheduleRetry(claimedDocument)
       throw error
     }
   }
@@ -62,7 +79,11 @@ export class DocumentProcessingService {
         where: {
           id: processingJobId,
           status: {
-            in: [PROCESSING_JOB_STATUSES.PENDING, PROCESSING_JOB_STATUSES.QUEUED],
+            in: [
+              PROCESSING_JOB_STATUSES.PENDING,
+              PROCESSING_JOB_STATUSES.QUEUED,
+              PROCESSING_JOB_STATUSES.RETRY_SCHEDULED,
+            ],
           },
         },
         data: {
@@ -124,6 +145,7 @@ export class DocumentProcessingService {
         documentId: processingJob.document.id,
         processingJobId: processingJob.id,
         processingAttemptId: processingAttempt.id,
+        attemptNumber: processingJob.attemptCount,
         originalFilename: processingJob.document.originalFilename,
         mimeType: processingJob.document.mimeType,
         storageKey: processingJob.document.storageKey,
@@ -168,6 +190,7 @@ export class DocumentProcessingService {
         data: {
           status: PROCESSING_JOB_STATUSES.COMPLETED,
           lastErrorCode: null,
+          nextRetryAt: null,
           leaseExpiresAt: null,
         },
       })
@@ -198,6 +221,69 @@ export class DocumentProcessingService {
         data: {
           status: PROCESSING_JOB_STATUSES.DEAD_LETTERED,
           lastErrorCode: errorCode,
+          nextRetryAt: null,
+        },
+      })
+      await transaction.document.update({
+        where: { id: claimedDocument.documentId },
+        data: {
+          status: DOCUMENT_STATUSES.FAILED,
+        },
+      })
+    })
+  }
+
+  private async scheduleRetry(claimedDocument: ClaimedDocument): Promise<void> {
+    const finishedAt = new Date()
+    const nextRetryAt = new Date(
+      finishedAt.getTime() +
+        DOCUMENT_PROCESSING_BACKOFF_DELAY_MS * 2 ** (claimedDocument.attemptNumber - 1),
+    )
+
+    await this.database.$transaction(async (transaction) => {
+      await transaction.processingAttempt.update({
+        where: { id: claimedDocument.processingAttemptId },
+        data: {
+          status: PROCESSING_ATTEMPT_STATUSES.FAILED,
+          finishedAt,
+          errorCode: PROCESSING_RETRYABLE_FAILURE,
+        },
+      })
+      await transaction.processingJob.update({
+        where: { id: claimedDocument.processingJobId },
+        data: {
+          status: PROCESSING_JOB_STATUSES.RETRY_SCHEDULED,
+          lastErrorCode: PROCESSING_RETRYABLE_FAILURE,
+          nextRetryAt,
+        },
+      })
+      await transaction.document.update({
+        where: { id: claimedDocument.documentId },
+        data: {
+          status: DOCUMENT_STATUSES.QUEUED,
+        },
+      })
+    })
+  }
+
+  private async failAfterRetryExhausted(claimedDocument: ClaimedDocument): Promise<void> {
+    const finishedAt = new Date()
+
+    await this.database.$transaction(async (transaction) => {
+      await transaction.processingAttempt.update({
+        where: { id: claimedDocument.processingAttemptId },
+        data: {
+          status: PROCESSING_ATTEMPT_STATUSES.FAILED,
+          finishedAt,
+          errorCode: PROCESSING_RETRY_EXHAUSTED,
+        },
+      })
+      await transaction.processingJob.update({
+        where: { id: claimedDocument.processingJobId },
+        data: {
+          status: PROCESSING_JOB_STATUSES.DEAD_LETTERED,
+          lastErrorCode: PROCESSING_RETRY_EXHAUSTED,
+          nextRetryAt: null,
         },
       })
       await transaction.document.update({

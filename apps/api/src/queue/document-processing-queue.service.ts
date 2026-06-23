@@ -1,4 +1,6 @@
 import {
+  DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+  DOCUMENT_PROCESSING_MAX_ATTEMPTS,
   PROCESS_DOCUMENT_JOB_NAME,
   PROCESSING_JOB_STATUSES,
   ProcessDocumentJobPayload,
@@ -27,7 +29,14 @@ export class DocumentProcessingQueueService implements OnApplicationShutdown {
       await this.queue.add(
         PROCESS_DOCUMENT_JOB_NAME,
         { processingJobId },
-        { jobId: processingJobId },
+        {
+          jobId: processingJobId,
+          attempts: DOCUMENT_PROCESSING_MAX_ATTEMPTS,
+          backoff: {
+            type: 'exponential',
+            delay: DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+          },
+        },
       )
       await this.database.processingJob.updateMany({
         where: {

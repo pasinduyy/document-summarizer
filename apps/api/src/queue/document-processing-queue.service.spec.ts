@@ -1,4 +1,6 @@
 import {
+  DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+  DOCUMENT_PROCESSING_MAX_ATTEMPTS,
   DOCUMENT_PROCESSING_QUEUE_NAME,
   PROCESS_DOCUMENT_JOB_NAME,
   PROCESSING_JOB_STATUSES,
@@ -49,13 +51,20 @@ describe('DocumentProcessingQueueService', () => {
     jest.restoreAllMocks()
   })
 
-  it('publishes with the expected queue job name, payload, and job ID', async () => {
+  it('publishes with the expected queue job name, payload, job ID, and retry options', async () => {
     await expect(service.tryPublish('processing-job-1')).resolves.toBe(true)
 
     expect(queue.add).toHaveBeenCalledWith(
       PROCESS_DOCUMENT_JOB_NAME,
       { processingJobId: 'processing-job-1' },
-      { jobId: 'processing-job-1' },
+      {
+        jobId: 'processing-job-1',
+        attempts: DOCUMENT_PROCESSING_MAX_ATTEMPTS,
+        backoff: {
+          type: 'exponential',
+          delay: DOCUMENT_PROCESSING_BACKOFF_DELAY_MS,
+        },
+      },
     )
     expect(DOCUMENT_PROCESSING_QUEUE_NAME).toBe('document-processing')
   })

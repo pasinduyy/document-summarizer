@@ -46,3 +46,5 @@ export type ProcessDocumentJobPayload = {
 
 export const DOCUMENT_PROCESSING_QUEUE_NAME = 'document-processing'
 export const PROCESS_DOCUMENT_JOB_NAME = 'process-document'
+export const DOCUMENT_PROCESSING_MAX_ATTEMPTS = 3
+export const DOCUMENT_PROCESSING_BACKOFF_DELAY_MS = 1000
