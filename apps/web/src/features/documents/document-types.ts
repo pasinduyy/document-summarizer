@@ -39,3 +39,13 @@ export type DocumentListItem = {
   processingJob: DocumentProcessingJob
   analysis: DocumentAnalysis | null
 }
+
+export type UploadedDocument = {
+  id: string
+  originalFilename: string
+  status: 'QUEUED'
+}
+
+export type UploadDocumentsResponse = {
+  documents: UploadedDocument[]
+}
