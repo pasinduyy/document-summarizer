@@ -1,7 +1,5 @@
 # Document Summarizer Platform
 
-## Overview
-
 An asynchronous document summarization platform with a Next.js frontend, NestJS API and worker,
 PostgreSQL, and Redis/BullMQ. It accepts multiple files, processes them in the background, and
 provides status polling, preview, summary, category, and confidence results.
