@@ -8,6 +8,8 @@ export type ProcessingJobStatus =
   | 'COMPLETED'
   | 'DEAD_LETTERED'
 
+export type ProcessingAttemptStatus = 'STARTED' | 'COMPLETED' | 'FAILED'
+
 export type DocumentCategory =
   | 'NEWS_ARTICLE'
   | 'PRESCRIPTION'
@@ -29,6 +31,14 @@ export type DocumentAnalysis = {
   confidence: number
 }
 
+export type DocumentProcessingAttempt = {
+  attemptNumber: number
+  status: ProcessingAttemptStatus
+  startedAt: string
+  finishedAt: string | null
+  errorCode: string | null
+}
+
 export type DocumentListItem = {
   id: string
   originalFilename: string
@@ -38,6 +48,19 @@ export type DocumentListItem = {
   completedAt: string | null
   processingJob: DocumentProcessingJob
   analysis: DocumentAnalysis | null
+}
+
+export type DocumentDetailAnalysis = DocumentAnalysis & {
+  summary: string
+  providerName: string
+  modelVersion: string | null
+  createdAt: string
+}
+
+export type DocumentDetail = Omit<DocumentListItem, 'analysis'> & {
+  latestAttempt: DocumentProcessingAttempt | null
+  analysis: DocumentDetailAnalysis | null
+  contentUrl: string
 }
 
 export type UploadedDocument = {

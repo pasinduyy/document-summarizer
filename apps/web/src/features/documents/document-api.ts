@@ -1,4 +1,4 @@
-import type { DocumentListItem, UploadDocumentsResponse } from './document-types'
+import type { DocumentDetail, DocumentListItem, UploadDocumentsResponse } from './document-types'
 
 function getApiBaseUrl(): string {
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim()
@@ -10,12 +10,13 @@ function getApiBaseUrl(): string {
   return apiBaseUrl.replace(/\/$/, '')
 }
 
-export async function listDocuments(): Promise<DocumentListItem[]> {
+export async function listDocuments(signal?: AbortSignal): Promise<DocumentListItem[]> {
   const response = await fetch(`${getApiBaseUrl()}/documents`, {
     headers: {
       Accept: 'application/json',
     },
     cache: 'no-store',
+    signal,
   })
 
   if (!response.ok) {
@@ -25,6 +26,27 @@ export async function listDocuments(): Promise<DocumentListItem[]> {
   }
 
   return response.json() as Promise<DocumentListItem[]>
+}
+
+export async function getDocumentDetail(
+  documentId: string,
+  signal?: AbortSignal,
+): Promise<DocumentDetail> {
+  const response = await fetch(`${getApiBaseUrl()}/documents/${encodeURIComponent(documentId)}`, {
+    headers: {
+      Accept: 'application/json',
+    },
+    cache: 'no-store',
+    signal,
+  })
+
+  if (!response.ok) {
+    throw new Error(
+      `Unable to load document details: ${response.status} ${response.statusText || 'request failed'}.`,
+    )
+  }
+
+  return response.json() as Promise<DocumentDetail>
 }
 
 export async function uploadDocuments(files: readonly File[]): Promise<UploadDocumentsResponse> {
