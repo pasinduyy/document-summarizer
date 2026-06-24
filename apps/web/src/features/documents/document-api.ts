@@ -7,7 +7,23 @@ function getApiBaseUrl(): string {
     throw new Error('NEXT_PUBLIC_API_BASE_URL must be set to the Document Summarizer API base URL.')
   }
 
-  return apiBaseUrl.replace(/\/$/, '')
+  return apiBaseUrl.replace(/\/+$/, '')
+}
+
+export function getDocumentContentUrl(contentUrl: string): string {
+  const relativeContentUrl = contentUrl.trim()
+
+  if (!relativeContentUrl) {
+    throw new Error('Document content URL is unavailable.')
+  }
+
+  if (!relativeContentUrl.startsWith('/')) {
+    throw new Error(
+      'Document content URL must be relative to the Document Summarizer API base URL.',
+    )
+  }
+
+  return `${getApiBaseUrl()}/${relativeContentUrl.replace(/^\/+/, '')}`
 }
 
 export async function listDocuments(signal?: AbortSignal): Promise<DocumentListItem[]> {

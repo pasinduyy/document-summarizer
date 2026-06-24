@@ -77,7 +77,7 @@ export function DocumentUploadPanel({ onUploadCompleted }: DocumentUploadPanelPr
         Upload documents
       </h2>
       <p className="mt-2 text-sm text-stone-600">
-        Select up to 10 TXT or PDF files, up to 10 MB each.
+        Select up to 10 files, up to 10 MB each.
       </p>
 
       <form className="mt-6" onSubmit={handleSubmit}>

@@ -1,4 +1,5 @@
 import type { DocumentDetail } from './document-types'
+import { DocumentPreview } from './document-preview'
 
 export type SelectedDocumentDetailState =
   | { status: 'idle' }
@@ -76,7 +77,18 @@ function DocumentDetailContent({ document }: { document: DocumentDetail }) {
         <ProcessingStatusMessage document={document} status={processingStatus} />
       </div>
 
-      {processingStatus === 'COMPLETED' ? <CompletedResult document={document} /> : null}
+      {document.status === 'COMPLETED' && processingStatus === 'COMPLETED' ? (
+        <div className="mt-6 grid gap-6 lg:grid-cols-2">
+          {document.contentUrl ? (
+            <DocumentPreview
+              contentUrl={document.contentUrl}
+              mimeType={document.mimeType}
+              originalFilename={document.originalFilename}
+            />
+          ) : null}
+          <CompletedResult document={document} />
+        </div>
+      ) : null}
       {processingStatus === 'FAILED' ? <FailedResult document={document} /> : null}
     </div>
   )
@@ -110,46 +122,46 @@ function ProcessingStatusMessage({
 }
 
 function CompletedResult({ document }: { document: DocumentDetail }) {
-  if (!document.analysis) {
-    return (
-      <p className="mt-6 text-sm text-stone-600">Processing completed. Results are unavailable.</p>
-    )
-  }
-
   return (
     <section
-      aria-labelledby="document-result-heading"
-      className="mt-6 border-t border-stone-200 pt-6"
+      aria-labelledby="document-analysis-heading"
+      className="border border-stone-200 bg-white p-4 sm:p-5"
     >
-      <h4 id="document-result-heading" className="text-base font-semibold text-stone-900">
-        Result
+      <h4 id="document-analysis-heading" className="text-base font-semibold text-stone-900">
+        Analysis
       </h4>
-      <dl className="mt-4 space-y-4 text-sm">
-        <div>
-          <dt className="text-stone-500">Summary</dt>
-          <dd className="mt-1 whitespace-pre-wrap text-stone-800">{document.analysis.summary}</dd>
-        </div>
-        <div>
-          <dt className="text-stone-500">Category</dt>
-          <dd className="mt-1 font-medium text-stone-800">{document.analysis.category}</dd>
-        </div>
-        <div>
-          <dt className="text-stone-500">Confidence</dt>
-          <dd className="mt-1 font-medium text-stone-800">
-            {formatConfidence(document.analysis.confidence)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-stone-500">Provider</dt>
-          <dd className="mt-1 font-medium text-stone-800">{document.analysis.providerName}</dd>
-        </div>
-        {document.analysis.modelVersion ? (
+      {document.analysis ? (
+        <dl className="mt-4 space-y-4 text-sm">
           <div>
-            <dt className="text-stone-500">Model version</dt>
-            <dd className="mt-1 font-medium text-stone-800">{document.analysis.modelVersion}</dd>
+            <dt className="text-stone-500">Summary</dt>
+            <dd className="mt-1 whitespace-pre-wrap text-stone-800">{document.analysis.summary}</dd>
           </div>
-        ) : null}
-      </dl>
+          <div>
+            <dt className="text-stone-500">Category</dt>
+            <dd className="mt-1 font-medium text-stone-800">{document.analysis.category}</dd>
+          </div>
+          <div>
+            <dt className="text-stone-500">Confidence</dt>
+            <dd className="mt-1 font-medium text-stone-800">
+              {formatConfidence(document.analysis.confidence)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-stone-500">Provider</dt>
+            <dd className="mt-1 font-medium text-stone-800">{document.analysis.providerName}</dd>
+          </div>
+          {document.analysis.modelVersion ? (
+            <div>
+              <dt className="text-stone-500">Model version</dt>
+              <dd className="mt-1 font-medium text-stone-800">{document.analysis.modelVersion}</dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : (
+        <p className="mt-4 text-sm text-stone-600">
+          Processing completed. Results are unavailable.
+        </p>
+      )}
     </section>
   )
 }
