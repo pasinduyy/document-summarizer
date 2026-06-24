@@ -27,9 +27,18 @@ npm install
 
 ## Environment Setup
 
+### Windows PowerShell
+
 ```powershell
 Copy-Item .env.example .env
 Copy-Item apps\web\.env.example apps\web\.env.local
+```
+
+### macOS / Linux
+
+```sh
+cp .env.example .env
+cp apps/web/.env.example apps/web/.env.local
 ```
 
 No real secrets are required for the local mock-provider flow.
