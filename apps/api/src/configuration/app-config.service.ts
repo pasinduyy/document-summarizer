@@ -14,6 +14,7 @@ export function resolveStorageRoot(
 @Injectable()
 export class AppConfigService {
   readonly apiPort: number
+  readonly webOrigin: string
   readonly databaseUrl: string
   readonly redisUrl: string
   readonly storageRoot: string
@@ -23,6 +24,22 @@ export class AppConfigService {
 
     if (Number.isNaN(apiPort)) {
       throw new Error('API_PORT must be a valid port number')
+    }
+
+    const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000'
+
+    try {
+      const parsedWebOrigin = new URL(webOrigin)
+
+      if (parsedWebOrigin.protocol !== 'http:' && parsedWebOrigin.protocol !== 'https:') {
+        throw new Error('WEB_ORIGIN must use the http:// or https:// protocol')
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`WEB_ORIGIN must be a valid origin: ${error.message}`)
+      }
+
+      throw new Error('WEB_ORIGIN must be a valid origin')
     }
 
     const databaseUrl = process.env.DATABASE_URL
@@ -38,6 +55,7 @@ export class AppConfigService {
     }
 
     this.apiPort = apiPort
+    this.webOrigin = new URL(webOrigin).origin
     this.databaseUrl = databaseUrl
     this.redisUrl = redisUrl
     this.storageRoot = resolveStorageRoot()
