@@ -46,6 +46,12 @@ docker compose up -d
 docker compose ps
 ```
 
+## Build Services and Web Together
+
+```powershell
+npm run build
+```
+
 ## Run Database Migrations
 
 ```powershell
